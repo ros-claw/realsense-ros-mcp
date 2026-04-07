@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "realsense-ros": {
+      "command": "bash",
+      "args": ["-c", "source /opt/ros/humble/setup.bash && python3 /home/tj10/.openclaw/workspace/realsense-ros-mcp/mcp_server.py"],
+      "env": {},
+      "description": "Intel RealSense ROS2 MCP Server (realsense2_camera)"
+    }
+  }
+}
