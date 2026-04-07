@@ -21,8 +21,9 @@ from mcp.server.fastmcp import FastMCP
 # Ensure the package directory is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from bridge import ROS2Bridge, DEFAULT_OUTPUT_DIR
+from bridge import ROS2Bridge, DEFAULT_OUTPUT_DIR, SDKMetadata
 import safety_guard as sg
+from safety_guard import SafetyGuard, SAFETY_CONSTRAINTS, ERROR_DEFINITIONS
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -638,6 +639,119 @@ def list_ros2_nodes() -> str:
     try:
         result = _get_bridge().list_ros2_nodes()
         return _ok(result)
+    except Exception as e:
+        return _err(str(e))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 8. SDK 元数据和系统信息 (基于 sdk_to_mcp 框架)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@mcp.tool()
+def get_sdk_metadata() -> str:
+    """获取 SDK 元数据信息。
+    
+    返回 RealSense ROS2 SDK 的版本、源代码地址、文档链接、支持硬件等信息。
+    基于 sdk_to_mcp 框架设计，用于版本跟踪和依赖管理。
+    """
+    try:
+        metadata = SDKMetadata.get_instance()
+        return _ok({
+            "sdk_info": metadata.to_dict(),
+            "server_version": "1.0.0",
+            "framework": "sdk_to_mcp"
+        })
+    except Exception as e:
+        return _err(str(e))
+
+
+@mcp.tool()
+def get_safety_constraints() -> str:
+    """获取所有安全约束定义。
+    
+    返回所有参数的安全限制，包括最小/最大值、单位、安全级别等。
+    用于了解系统安全边界和参数合法范围。
+    """
+    try:
+        constraints = SafetyGuard.list_constraints()
+        result = {}
+        for name, constraint in constraints.items():
+            result[name] = {
+                "parameter": constraint.parameter,
+                "min_value": constraint.min_value,
+                "max_value": constraint.max_value,
+                "units": constraint.units,
+                "safety_level": constraint.safety_level.value,
+                "description": constraint.description,
+                "hardware_limit": constraint.hardware_limit,
+                "software_guard": constraint.software_guard,
+            }
+        return _ok({
+            "constraints": result,
+            "count": len(result)
+        })
+    except Exception as e:
+        return _err(str(e))
+
+
+@mcp.tool()
+def get_error_definitions() -> str:
+    """获取所有错误定义。
+    
+    返回系统定义的错误代码、描述、严重程度和恢复建议。
+    用于错误处理和故障排除。
+    """
+    try:
+        errors = SafetyGuard.list_errors()
+        result = {}
+        for name, error in errors.items():
+            result[name] = {
+                "code": error.code,
+                "name": error.name,
+                "description": error.description,
+                "severity": error.severity,
+                "recoverable": error.recoverable,
+                "suggested_action": error.suggested_action,
+            }
+        return _ok({
+            "errors": result,
+            "count": len(result)
+        })
+    except Exception as e:
+        return _err(str(e))
+
+
+@mcp.tool()
+def validate_parameter(parameter: str, value: float) -> str:
+    """验证单个参数是否符合安全约束。
+    
+    在发送命令前验证参数值是否有效。
+    
+    Args:
+        parameter: 参数名称 (如 width, fps, timeout 等)
+        value: 要验证的数值
+    
+    Returns:
+        验证结果，包含是否通过和详细消息
+    """
+    try:
+        constraint = SafetyGuard.get_constraint(parameter)
+        if constraint is None:
+            return _err(f"未知参数: {parameter}")
+        
+        valid, message = constraint.validate(value)
+        return _ok({
+            "parameter": parameter,
+            "value": value,
+            "valid": valid,
+            "message": message,
+            "constraint": {
+                "min": constraint.min_value,
+                "max": constraint.max_value,
+                "units": constraint.units,
+                "safety_level": constraint.safety_level.value,
+            }
+        })
     except Exception as e:
         return _err(str(e))
 

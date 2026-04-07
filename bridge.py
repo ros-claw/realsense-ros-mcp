@@ -5,10 +5,19 @@ Manages ROS2 node lifecycle, camera launch processes, topic subscriptions,
 service calls, and parameter operations. Designed for single-frame capture
 with spin_once timeout pattern (non-blocking).
 
+Based on sdk_to_mcp framework with SDK metadata tracking and safety constraints.
+
 Requirements:
     - ROS2 Humble (source /opt/ros/humble/setup.bash)
     - realsense2_camera package installed
     - cv_bridge, sensor_msgs, rclpy from ROS2
+
+SDK Metadata:
+    Name: realsense-ros (realsense2_camera)
+    Version: 4.55.1+ (ROS2 Humble)
+    Source: https://github.com/IntelRealSense/realsense-ros
+    Docs: https://github.com/IntelRealSense/realsense-ros/blob/ros2-development/README.md
+    License: Apache-2.0
 """
 
 import os
@@ -21,8 +30,48 @@ import threading
 import time
 import logging
 from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
 
 logger = logging.getLogger("realsense_mcp.bridge")
+
+# ── SDK Metadata ─────────────────────────────────────────────────────────────
+
+@dataclass
+class SDKMetadata:
+    """
+    SDK 元数据 - 基于 sdk_to_mcp 框架
+    
+    跟踪版本信息、源代码引用和依赖关系，
+    确保 MCP server 与底层 SDK 保持同步。
+    """
+    name: str = "realsense-ros"
+    version: str = "4.55.1+"
+    protocol: str = "ROS2/topics/services"
+    source_url: str = "https://github.com/IntelRealSense/realsense-ros"
+    doc_url: str = "https://github.com/IntelRealSense/realsense-ros/blob/ros2-development/README.md"
+    license: str = "Apache-2.0"
+    hardware_models: List[str] = field(default_factory=lambda: [
+        "D435", "D435i", "D455", "D415", "D405", "L515"
+    ])
+    dependencies: Dict[str, str] = field(default_factory=lambda: {
+        "ros2": "humble",
+        "realsense2_camera": ">=4.55.1",
+        "python": ">=3.8"
+    })
+    checksum: str = ""
+    extracted_date: str = field(default_factory=lambda: datetime.now().isoformat())
+    notes: str = "Intel RealSense ROS2 Driver"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return asdict(self)
+    
+    @classmethod
+    def get_instance(cls) -> "SDKMetadata":
+        """获取 SDK 元数据实例"""
+        return cls()
+
 
 # Default image output directory
 DEFAULT_OUTPUT_DIR = "/tmp/realsense-ros"
