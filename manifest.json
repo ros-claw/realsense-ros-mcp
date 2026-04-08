@@ -1,0 +1,33 @@
+{
+  "robot_id": "realsense-ros-mcp",
+  "robot_name": "Intel RealSense (ROS2)",
+  "version": "1.0.0",
+  "description": "MCP server for Intel RealSense depth camera via ROS2",
+  "author": "sdk_to_mcp_v2.0",
+  "generated_date": "2026-04-08",
+  "sdk": {
+    "name": "realsense2_camera",
+    "version": "4.51.0+",
+    "protocol": "ROS2"
+  },
+  "hardware": {
+    "manufacturer": "Intel",
+    "model": "RealSense D400 Series"
+  },
+  "files": [
+    "mcp_server.py",
+    "bridge.py",
+    "safety_guard.py",
+    "e_urdf.json",
+    "prompts/system.md",
+    "prompts/tools_usage.md",
+    "manifest.json",
+    "requirements.txt",
+    "README.md"
+  ],
+  "mcp_server": {
+    "command": "python",
+    "args": ["mcp_server.py"],
+    "transport": "stdio"
+  }
+}

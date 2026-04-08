@@ -1,0 +1,63 @@
+{
+  "embodiment_id": "realsense_ros_v1",
+  "embodiment_name": "Intel RealSense (ROS2)",
+  "version": "1.0.0",
+  "meta": {
+    "manufacturer": "Intel",
+    "model": "RealSense D400 Series",
+    "description": "Intel RealSense depth camera via ROS2 realsense2_camera",
+    "url": "https://github.com/IntelRealSense/realsense-ros",
+    "tags": ["camera", "depth", "ros2", "vision", "perception"],
+    "difficulty": "beginner",
+    "release_date": "2024-01",
+    "generated_by": "sdk_to_mcp_v2.0"
+  },
+  "sensors": {
+    "camera_type": "depth_camera",
+    "rgb_resolution": [1920, 1080],
+    "depth_resolution": [1280, 720],
+    "fps": 30,
+    "fov_horizontal": 69,
+    "fov_vertical": 42,
+    "depth_range_m": [0.3, 10.0],
+    "topics": [
+      "/camera/color/image_raw",
+      "/camera/depth/image_rect_raw",
+      "/camera/aligned_depth_to_color/image_raw",
+      "/camera/points"
+    ]
+  },
+  "semantics": {
+    "robot_type": "sensor",
+    "affordances": [
+      "depth_perception",
+      "rgb_imaging",
+      "point_cloud_capture",
+      "3d_scanning",
+      "object_detection"
+    ],
+    "typical_payload_kg": 0.1,
+    "power_consumption_w": 3.0
+  },
+  "sdk_mappings": {
+    "ros2_driver": "realsense2_camera",
+    "protocol": "ROS2",
+    "launch_file": "rs_launch.py"
+  },
+  "mcp_server_config": {
+    "tools": [
+      "start_camera",
+      "stop_camera",
+      "capture_frame",
+      "get_camera_info",
+      "set_exposure",
+      "align_depth_to_color"
+    ],
+    "resources": [
+      "realsense://camera/color",
+      "realsense://camera/depth",
+      "realsense://camera/points"
+    ],
+    "transport": "stdio"
+  }
+}
