@@ -76,8 +76,79 @@ class SDKMetadata:
 # Default image output directory
 DEFAULT_OUTPUT_DIR = "/tmp/realsense-ros"
 
-# ROS2 environment setup script
+# ROS2 environment setup script (will be updated at import time if possible)
 ROS2_SETUP_BASH = "/opt/ros/humble/setup.bash"
+
+
+def _ensure_ros2_env() -> None:
+    """Populate os.environ with ROS2 setup if it is missing.
+
+    MCP stdio clients typically spawn the server with a sanitized environment
+    that drops AMENT_PREFIX_PATH / PYTHONPATH / LD_LIBRARY_PATH. This function
+    auto-sources the local ROS2 setup script. If LD_LIBRARY_PATH had to be
+    injected after process startup, the process is re-exec'd so the dynamic
+    linker sees it before rclpy's C extensions are imported.
+    """
+    global ROS2_SETUP_BASH
+    if os.environ.get("REALSENSE_ROS_MCP_REEXEC") == "1":
+        return
+
+    already_sourced = bool(os.environ.get("AMENT_PREFIX_PATH")) and bool(
+        os.environ.get("LD_LIBRARY_PATH")
+    )
+    if already_sourced:
+        ros_distro = os.environ.get("ROS_DISTRO", "")
+        if ros_distro:
+            candidate = f"/opt/ros/{ros_distro}/setup.bash"
+            if os.path.isfile(candidate):
+                ROS2_SETUP_BASH = candidate
+        return
+
+    candidates = [
+        "/opt/ros/jazzy/setup.bash",
+        "/opt/ros/humble/setup.bash",
+        "/opt/ros/iron/setup.bash",
+        "/opt/ros/rolling/setup.bash",
+    ]
+    sourced = False
+    for setup_path in candidates:
+        if not os.path.isfile(setup_path):
+            continue
+        try:
+            result = subprocess.run(
+                ["bash", "-c", f"source {setup_path} && env"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                continue
+            for line in result.stdout.splitlines():
+                if "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k in (
+                    "AMENT_PREFIX_PATH", "PYTHONPATH", "LD_LIBRARY_PATH",
+                    "ROS_DISTRO", "ROS_VERSION", "ROS_LOCALHOST_ONLY",
+                    "RMW_IMPLEMENTATION", "RCUTILS_LOGGING_USE_STDOUT",
+                ):
+                    os.environ[k] = v
+                elif k == "PATH":
+                    existing = os.environ.get("PATH", "")
+                    if v not in existing:
+                        os.environ["PATH"] = v + os.pathsep + existing
+            ROS2_SETUP_BASH = setup_path
+            sourced = True
+            logger.info("Sourced ROS2 environment from %s", setup_path)
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to source %s: %s", setup_path, exc)
+
+    if sourced and os.environ.get("LD_LIBRARY_PATH"):
+        # Re-exec so the dynamic linker picks up LD_LIBRARY_PATH before rclpy loads.
+        os.environ["REALSENSE_ROS_MCP_REEXEC"] = "1"
+        os.execvpe(sys.executable, [sys.executable] + sys.argv, os.environ)
+
+
+_ensure_ros2_env()
 
 # --------------------------------------------------------------------------- #
 # Lazy imports for ROS2 modules — they are only available after sourcing ROS2  #
@@ -120,6 +191,14 @@ def _try_import_ros2() -> bool:
 
     global _cv_bridge_broken
 
+    # MCP stdio clients spawn the server with a sanitized environment, so
+    # PYTHONPATH may have been injected after Python startup. Ensure it is on
+    # sys.path before trying to import ROS2 modules.
+    for p in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+        p = p.strip()
+        if p and p not in sys.path:
+            sys.path.append(p)
+
     try:
         import rclpy
         from rclpy.node import Node
@@ -131,6 +210,15 @@ def _try_import_ros2() -> bool:
         _CameraInfo = CameraInfo
         _Imu = Imu
         _PointCloud2 = PointCloud2
+
+        # Force-load type support capsules. In a sanitized MCP stdio environment
+        # the lazy import can be skipped, leaving _TYPE_SUPPORT as None and
+        # causing create_subscription/publisher to fail.
+        for _msg_cls in (_Image, _CameraInfo, _Imu, _PointCloud2):
+            try:
+                _msg_cls.__import_type_support__()
+            except Exception as _exc:  # noqa: BLE001
+                logger.warning("Failed to import type support for %s: %s", _msg_cls.__name__, _exc)
 
         # Skip cv_bridge entirely — it segfaults with numpy 2.x due to ABI mismatch.
         # We use pure-numpy image conversion instead (see _imgmsg_to_numpy).
@@ -398,6 +486,11 @@ class ROS2Bridge:
             Environment dict.
         """
         env = os.environ.copy()
+        # PYTHONNOUSERSITE can prevent the ros2 CLI from discovering
+        # ros2cli/ament packages in a system-site-packages venv, so drop it
+        # for subprocess calls.
+        env.pop("PYTHONNOUSERSITE", None)
+
         # Ensure ROS2 paths are in the environment (they should be if the
         # user sourced setup.bash before starting the server)
         if "AMENT_PREFIX_PATH" not in env:
@@ -414,6 +507,23 @@ class ROS2Bridge:
                             env[k] = v
             except Exception:
                 pass
+
+        # Make sure the ROS2 Python site-packages are on PYTHONPATH so
+        # importlib.metadata can find package metadata for ros2cli.
+        ament_path = env.get("AMENT_PREFIX_PATH", "")
+        python_paths = []
+        if "PYTHONPATH" in env:
+            python_paths = env["PYTHONPATH"].split(os.pathsep)
+        for prefix in ament_path.split(os.pathsep):
+            prefix = prefix.strip()
+            if not prefix:
+                continue
+            site_pkg = os.path.join(prefix, "lib", "python3.12", "site-packages")
+            if os.path.isdir(site_pkg) and site_pkg not in python_paths:
+                python_paths.append(site_pkg)
+        if python_paths:
+            env["PYTHONPATH"] = os.pathsep.join(python_paths)
+
         return env
 
     def stop_camera(self, camera_name: str) -> Dict[str, Any]:
@@ -502,6 +612,20 @@ class ROS2Bridge:
         Returns:
             Dict with topic list.
         """
+        # Prefer the live rclpy node when available; this avoids the ros2cli
+        # subprocess environment issues seen in venv + --system-site-packages.
+        if self._node is not None:
+            try:
+                topics = []
+                for topic_name, topic_types in self._node.get_topic_names_and_types():
+                    topic_type = topic_types[0] if topic_types else "unknown"
+                    if camera_name and f"/{camera_name}/" not in topic_name:
+                        continue
+                    topics.append({"topic": topic_name, "type": topic_type})
+                return {"success": True, "topics": topics}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("rclpy list_topics failed, falling back to ros2 CLI: %s", exc)
+
         try:
             env = self._build_ros2_env()
             result = subprocess.run(
@@ -598,6 +722,14 @@ class ROS2Bridge:
             The captured message, or None on timeout.
         """
         self._ensure_node()
+        if msg_type is None:
+            raise RuntimeError("ROS2 message type is None; ROS2 import may have failed")
+        if getattr(msg_type, '_TYPE_SUPPORT', None) is None:
+            try:
+                msg_type.__import_type_support__()
+            except Exception as _exc:  # noqa: BLE001
+                logger.warning("Failed to import type support for %s in _subscribe_one_msg: %s", msg_type.__name__, _exc)
+
         captured = {"msg": None}
 
         def _cb(msg: Any) -> None:
@@ -684,8 +816,8 @@ class ROS2Bridge:
 
     @staticmethod
     def _topic_prefix(camera_name: str) -> str:
-        """Build topic prefix from camera name (/<camera_name>/<camera_name>/)."""
-        return f"/{camera_name}/{camera_name}"
+        """Build topic prefix from camera name (/camera/<camera_name>)."""
+        return f"/camera/{camera_name}"
 
     def capture_color_image(self, camera_name: str, save_path: str, timeout_sec: float = 5.0) -> Dict[str, Any]:
         """
@@ -699,6 +831,7 @@ class ROS2Bridge:
         Returns:
             Dict with capture result.
         """
+        self._ensure_node()
         import cv2
         import numpy as np
 
@@ -744,6 +877,7 @@ class ROS2Bridge:
         Returns:
             Dict with capture result.
         """
+        self._ensure_node()
         import cv2
         import numpy as np
 
@@ -754,6 +888,9 @@ class ROS2Bridge:
             topic = f"{prefix}/depth/image_rect_raw"
 
         msg = self._subscribe_one_msg(topic, _Image, timeout_sec)
+        if msg is None and aligned:
+            topic = f"{prefix}/depth/image_rect_raw"
+            msg = self._subscribe_one_msg(topic, _Image, timeout_sec)
         if msg is None:
             return {"success": False, "message": f"Timeout waiting for depth image on {topic}"}
 
@@ -837,6 +974,7 @@ class ROS2Bridge:
         Returns:
             Dict with capture result.
         """
+        self._ensure_node()
         import cv2
 
         topic = f"{self._topic_prefix(camera_name)}/infra{index}/image_rect_raw"
@@ -864,6 +1002,7 @@ class ROS2Bridge:
         Returns:
             Dict with IMU orientation, angular velocity, and linear acceleration.
         """
+        self._ensure_node()
         topic = f"{self._topic_prefix(camera_name)}/imu"
         msg = self._subscribe_one_msg(topic, _Imu, timeout_sec)
         if msg is None:
@@ -907,6 +1046,7 @@ class ROS2Bridge:
         Returns:
             Dict with capture result.
         """
+        self._ensure_node()
         import numpy as np
 
         topic = f"{self._topic_prefix(camera_name)}/depth/color/points"
@@ -1070,6 +1210,7 @@ class ROS2Bridge:
             "infra2": "infra2/camera_info",
             "aligned_depth_to_color": "aligned_depth_to_color/camera_info",
         }
+        self._ensure_node()
         suffix = stream_topic_map.get(stream, "color/camera_info")
         topic = f"{self._topic_prefix(camera_name)}/{suffix}"
 
@@ -1131,6 +1272,7 @@ class ROS2Bridge:
         Returns:
             Dict with extrinsics data.
         """
+        self._ensure_node()
         topic = f"{self._topic_prefix(camera_name)}/extrinsics/depth_to_color"
 
         try:

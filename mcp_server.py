@@ -192,12 +192,18 @@ def get_topic_hz(topic_name: str, window: int = 5) -> str:
 
 
 @mcp.tool()
-def capture_color_image(camera_name: str, save_path: str = "", timeout_sec: float = 5.0) -> str:
+def capture_color_image(
+    camera_name: str,
+    save_path: str = "",
+    output_path: str = "",
+    timeout_sec: float = 5.0,
+) -> str:
     """从 ROS2 color topic 订阅一帧彩色图像并保存为 PNG。
 
     Args:
         camera_name: 相机名称
         save_path: 保存路径（默认 /tmp/realsense-ros/<camera_name>_color.png）
+        output_path: save_path 的别名，兼容外部调用
         timeout_sec: 订阅超时秒数 (0.1-30)
     """
     try:
@@ -205,6 +211,7 @@ def capture_color_image(camera_name: str, save_path: str = "", timeout_sec: floa
         sg.check_or_raise(ok, msg)
         ok, msg = sg.validate_timeout(timeout_sec)
         sg.check_or_raise(ok, msg)
+        save_path = save_path or output_path
         if save_path:
             ok, msg = sg.validate_file_path(save_path)
             sg.check_or_raise(ok, msg)
@@ -221,6 +228,7 @@ def capture_color_image(camera_name: str, save_path: str = "", timeout_sec: floa
 def capture_depth_image(
     camera_name: str,
     save_path: str = "",
+    output_path: str = "",
     aligned: bool = True,
     colorize: bool = True,
     timeout_sec: float = 5.0,
@@ -230,6 +238,7 @@ def capture_depth_image(
     Args:
         camera_name: 相机名称
         save_path: 保存路径（默认自动生成）
+        output_path: save_path 的别名，兼容外部调用
         aligned: 使用 aligned_depth_to_color topic（深度对齐到彩色坐标系）
         colorize: True=JET 伪彩色可视化, False=原始 16-bit 深度值
         timeout_sec: 订阅超时秒数
@@ -239,6 +248,7 @@ def capture_depth_image(
         sg.check_or_raise(ok, msg)
         ok, msg = sg.validate_timeout(timeout_sec)
         sg.check_or_raise(ok, msg)
+        save_path = save_path or output_path
         if save_path:
             ok, msg = sg.validate_file_path(save_path)
             sg.check_or_raise(ok, msg)

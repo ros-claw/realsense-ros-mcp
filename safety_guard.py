@@ -38,7 +38,7 @@ class SafetyLevel(Enum):
 class SafetyConstraint:
     """
     参数安全约束定义
-    
+
     Attributes:
         parameter: 参数名称
         min_value: 最小允许值
@@ -79,7 +79,7 @@ class SafetyConstraint:
 class ErrorDefinition:
     """
     SDK 错误代码定义
-    
+
     Attributes:
         code: 错误代码
         name: 错误标识符
@@ -259,7 +259,7 @@ class SafetyError(Exception):
 class SafetyGuard:
     """
     参数安全校验器 - ROS2 RealSense 增强版
-    
+
     基于 SafetyConstraint 定义，提供结构化的参数验证。
     包含 ROS2 特定的验证（topic、namespace、node 名称）。
     """
@@ -271,7 +271,7 @@ class SafetyGuard:
             return False, f"分辨率必须为整数, 实际: width={type(width).__name__}, height={type(height).__name__}"
         if width < 1 or height < 1:
             return False, f"分辨率必须为正数, 实际: {width}x{height}"
-        
+
         valid_w, msg_w = SAFETY_CONSTRAINTS["width"].validate(width)
         if not valid_w:
             return False, msg_w
@@ -373,6 +373,29 @@ class SafetyGuard:
             raise SafetyError(message)
 
     @staticmethod
+    def check_or_raise(valid: bool, message: str) -> None:
+        """check 的别名，兼容 mcp_server 中的调用风格。"""
+        SafetyGuard.check(valid, message)
+
+    @staticmethod
+    def validate_serial(serial: str) -> Tuple[bool, str]:
+        """验证 RealSense 相机序列号。"""
+        if not serial or not isinstance(serial, str):
+            return False, "serial 不能为空"
+        if not re.match(r"^[0-9A-Za-z]{6,32}$", serial):
+            return False, f"serial 应为 6-32 位字母/数字: {serial}"
+        return True, "OK"
+
+    @staticmethod
+    def validate_infrared_index(index: int) -> Tuple[bool, str]:
+        """验证红外相机索引。"""
+        if not isinstance(index, int):
+            return False, f"infrared_index 必须为整数, 实际: {type(index).__name__}"
+        if index not in (0, 1):
+            return False, f"infrared_index 只能为 0 或 1, 实际: {index}"
+        return True, "OK"
+
+    @staticmethod
     def get_constraint(parameter: str) -> Optional[SafetyConstraint]:
         """获取参数的安全约束定义"""
         return SAFETY_CONSTRAINTS.get(parameter)
@@ -391,3 +414,21 @@ class SafetyGuard:
     def list_errors() -> Dict[str, ErrorDefinition]:
         """列出所有错误定义"""
         return ERROR_DEFINITIONS.copy()
+
+
+# 模块级便捷别名，让 mcp_server 中 `import safety_guard as sg` 的调用生效。
+# （原代码把这些 staticmethod 当模块函数调用，导致 AttributeError。）
+check_or_raise = SafetyGuard.check_or_raise
+check = SafetyGuard.check
+validate_camera_name = SafetyGuard.validate_camera_name
+validate_serial = SafetyGuard.validate_serial
+validate_resolution = SafetyGuard.validate_resolution
+validate_fps = SafetyGuard.validate_fps
+validate_timeout = SafetyGuard.validate_timeout
+validate_namespace = SafetyGuard.validate_namespace
+validate_file_path = SafetyGuard.validate_file_path
+validate_topic_name = SafetyGuard.validate_topic_name
+validate_filter_name = SafetyGuard.validate_filter_name
+validate_stream_name = SafetyGuard.validate_stream_name
+validate_infrared_index = SafetyGuard.validate_infrared_index
+validate_downsample = SafetyGuard.validate_downsample
