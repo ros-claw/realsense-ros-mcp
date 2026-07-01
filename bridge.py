@@ -707,11 +707,70 @@ class ROS2Bridge:
     # Frame Capture                                                       #
     # ------------------------------------------------------------------ #
 
+    def _qos_for_topic(self, topic: str) -> "QoSProfile":
+        """
+        Build a subscriber QoS profile that matches the topic's publishers.
+
+        realsense2_camera's default is SensorDataQoS (BEST_EFFORT / VOLATILE),
+        but many launch configurations / camera firmwares publish color/depth
+        with RELIABLE / TRANSIENT_LOCAL. A mismatched subscriber can fail to
+        receive from those publishers depending on the DDS vendor/version, so
+        we introspect the actual publisher QoS and mirror it when possible.
+
+        If no publisher info is available yet, fall back to RELIABLE /
+        TRANSIENT_LOCAL — this is the safest default for RealSense ROS nodes
+        in this environment and still receives from BEST_EFFORT publishers in
+        many DDS implementations, while SensorDataQoS cannot receive from
+        RELIABLE publishers.
+        """
+        from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+
+        # Allow a discovery window so the node can see publishers that are
+        # already alive on the DDS graph. Some topics (e.g. D435i depth) take
+        # longer to appear than others.
+        pub_info: List[Any] = []
+        try:
+            for _ in range(20):
+                pub_info = self._node.get_publishers_info_by_topic(topic)
+                if pub_info:
+                    break
+                time.sleep(0.1)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to query publisher info for %s: %s", topic, exc)
+
+        if pub_info:
+            # Mirror the first publisher's reliability and durability. Multiple
+            # publishers with mixed QoS are rare for RealSense image topics.
+            pub_qos = pub_info[0].qos_profile
+            matched_qos = QoSProfile(
+                reliability=pub_qos.reliability,
+                durability=pub_qos.durability,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=max(1, getattr(pub_qos, "depth", 5)),
+            )
+            logger.debug(
+                "Mirroring publisher QoS for %s: reliability=%s durability=%s",
+                topic, pub_qos.reliability.name, pub_qos.durability.name,
+            )
+            return matched_qos
+
+        logger.debug(
+            "No publisher info for %s after discovery window, using RELIABLE/TRANSIENT_LOCAL fallback",
+            topic,
+        )
+        return QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=5,
+        )
+
     def _subscribe_one_msg(self, topic: str, msg_type: Any, timeout_sec: float = 5.0) -> Optional[Any]:
         """
         Subscribe to a topic and capture a single message using spin_once.
 
-        Uses BEST_EFFORT QoS to match realsense2_camera's sensor data QoS.
+        The subscriber QoS is matched to the actual publisher QoS when
+        publisher info is available, falling back to SensorDataQoS otherwise.
 
         Args:
             topic: Topic name.
@@ -735,16 +794,8 @@ class ROS2Bridge:
         def _cb(msg: Any) -> None:
             captured["msg"] = msg
 
-        # realsense2_camera publishes with SensorDataQoS (best_effort).
-        # A reliable subscriber CANNOT receive from a best_effort publisher.
-        from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-        sensor_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=5,
-        )
-        sub = self._node.create_subscription(msg_type, topic, _cb, sensor_qos)
+        qos = self._qos_for_topic(topic)
+        sub = self._node.create_subscription(msg_type, topic, _cb, qos)
         deadline = time.monotonic() + timeout_sec
         try:
             while captured["msg"] is None and time.monotonic() < deadline:
